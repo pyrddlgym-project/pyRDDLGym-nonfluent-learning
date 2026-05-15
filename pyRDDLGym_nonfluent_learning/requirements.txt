@@ -1,0 +1,4 @@
+pyRDDLGym>=2.7
+pyRDDLGym-jax>=3.1
+rddlrepository>=2.2
+blackjax>=1.5
