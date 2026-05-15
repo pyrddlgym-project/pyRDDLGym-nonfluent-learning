@@ -1,3 +1,4 @@
+from tqdm import tqdm
 import numpy as np
 import gymnasium as gym
 from typing import Callable, Dict, Generator, Tuple
@@ -21,10 +22,11 @@ def generate_rollouts(env: gym.Env, policy: Callable, episodes: int, max_steps: 
     actions = {k: [] for k in model.action_fluents}
     next_states = {k: [] for k in model.state_fluents}
 
-    for _ in range(episodes):
+    for _ in (pbar := tqdm(range(episodes), total=episodes, desc='Generating rollouts')):
         obs, _ = env.reset()
         done = False
         steps = 0
+        total_reward = 0.
         while not done and steps < max_steps:
             action = policy(obs)
             next_obs, reward, term, trunc, info = env.step(action)
@@ -34,9 +36,11 @@ def generate_rollouts(env: gym.Env, policy: Callable, episodes: int, max_steps: 
             for key in actions:
                 actions[key].append(action[key])
             obs = next_obs
+            total_reward += reward
             done = term or trunc
             steps += 1
-    
+        pbar.set_postfix({'Episode reward': total_reward})
+
     # reshape the data into arrays of shape (num_transitions, fluent_size)
     state_shapes = {k: (-1, *np.shape(v)) for k, v in model.state_fluents.items()}
     action_shapes = {k: (-1, *np.shape(v)) for k, v in model.action_fluents.items()}
@@ -56,8 +60,6 @@ def batch_sampler(states: State, actions: Action, next_states: State, batch_size
     :param batch_size: how many transitions to include in each batch
     :param max_iters: the maximum number of batches to yield
     '''
-    if not (len(states) == len(actions) == len(next_states)):
-        raise ValueError('States, actions, and next_states must have the same keys')
     num_transitions = len(next(iter(states.values())))
     if num_transitions < batch_size:
         raise ValueError('Batch size must be less than the number of transitions')
