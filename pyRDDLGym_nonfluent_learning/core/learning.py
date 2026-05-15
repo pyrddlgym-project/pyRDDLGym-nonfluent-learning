@@ -245,29 +245,37 @@ class JaxNonFluentLearner:
     def _jax_loss(self, map_fn, step_fn):
         num_samples = max(2, self.samples_per_datapoint)
 
-        # flatten the samples into a single vector
-        def _jax_wrapped_flatten_and_norm(values, is_target, norm_stats):
-            parts = []
-            for key in self.state_keys:
-                value = jnp.asarray(values[key])
-                if norm_stats is not None:
-                    mean, std = norm_stats[key]
-                    value = (value - mean) / (std + 1e-10)
-                if is_target:
-                    value = jnp.reshape(value, (value.shape[0], -1))
-                else:
-                    value = jnp.reshape(value, (value.shape[0], value.shape[1], -1))
-                parts.append(value)
-            return jnp.concatenate(parts, axis=-1)
-        
-        # energy score E||X - y||^2 - 0.5 E||X - X'||^2
+        # energy score with mixed distances:
+        # - non-bool: squared error
+        # - bool: L1 / Hamming-style error
         def _jax_wrapped_energy_score_loss(next_states, pred_next_states, norm_stats):
-            target_vec = _jax_wrapped_flatten_and_norm(next_states, True, norm_stats)
-            pred_vec = _jax_wrapped_flatten_and_norm(pred_next_states, False, norm_stats)
-            diff_to_target = pred_vec - jnp.expand_dims(target_vec, axis=0)
-            first_term = jnp.mean(jnp.sum(jnp.square(diff_to_target), axis=-1))
-            pw = pred_vec[:, jnp.newaxis, :, :] - pred_vec[jnp.newaxis, :, :, :]
-            second_term = 0.5 * jnp.mean(jnp.sum(jnp.square(pw), axis=-1))
+            first_term = 0.0
+            second_term = 0.0
+            for key in self.state_keys:
+                target = jnp.asarray(next_states[key])
+                pred = jnp.asarray(pred_next_states[key])
+                is_bool = self.rddl.variable_ranges[key] == 'bool'
+                
+                # normalization
+                if norm_stats is not None and not is_bool:
+                    mean, std = norm_stats[key]
+                    target = (target - mean) / (std + 1e-10)
+                    pred = (pred - mean) / (std + 1e-10)
+                
+                # flatten the fluent dimensions for distance calculation
+                target = jnp.reshape(target, (target.shape[0], -1))
+                pred = jnp.reshape(pred, (pred.shape[0], pred.shape[1], -1))
+
+                # energy score calculation
+                diff_to_target = pred - jnp.expand_dims(target, axis=0)
+                pw = pred[:, jnp.newaxis, :, :] - pred[jnp.newaxis, :, :, :]
+                if is_bool:
+                    first_term += jnp.mean(jnp.sum(jnp.abs(diff_to_target), axis=-1))
+                    second_term += 0.5 * jnp.mean(jnp.sum(jnp.abs(pw), axis=-1))
+                else:
+                    first_term += jnp.mean(jnp.sum(jnp.square(diff_to_target), axis=-1))
+                    second_term += 0.5 * jnp.mean(jnp.sum(jnp.square(pw), axis=-1))
+
             return first_term - second_term
 
         # helper to produce antithetic keys for variance reduction
